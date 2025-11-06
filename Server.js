@@ -9,8 +9,6 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import axios from 'axios';
-import FormData from 'form-data';
-import path from 'path';
 import nodemailer from 'nodemailer';
 
 dotenv.config();
@@ -26,11 +24,23 @@ const productsCollection = db.collection('products');
 const subscribersCollection = db.collection('subscribers'); // Added for clarity
 
 // --- CLOUDINARY, MULTER, AND NODEMAILER SETUP ---
+// --- CLOUDINARY, MULTER, AND NODEMAILER SETUP ---
 cloudinary.config({ cloud_name: process.env.CLOUDINARY_CLOUD_NAME, api_key: process.env.CLOUDINARY_API_KEY, api_secret: process.env.CLOUDINARY_API_SECRET });
+
 const imageStorage = new CloudinaryStorage({ cloudinary: cloudinary, params: { folder: 'hyjain-products', allowed_formats: ['jpeg', 'png', 'jpg', 'webp'] } });
+
+// ✅ FIX: Create a dedicated Cloudinary storage engine for files.
+const fileStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'hyjain-files',
+    resource_type: 'auto', // Allows any file type (like PDF)
+  }
+});
+
 const imageUpload = multer({ storage: imageStorage });
-const memoryStorage = multer.memoryStorage();
-const fileUpload = multer({ storage: memoryStorage });
+// ✅ FIX: Use the new fileStorage engine for file uploads instead of memoryStorage.
+const fileUpload = multer({ storage: fileStorage });
 const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user: process.env.NODEMAILER_EMAIL, pass: process.env.NODEMAILER_APP_PASSWORD, }, });
 console.log('Nodemailer configured for:', process.env.NODEMAILER_EMAIL);
 
@@ -46,8 +56,26 @@ app.set('trust proxy', true);
 
 // --- IMAGE & FILE UPLOAD ROUTES ---
 app.post('/api/upload-image', imageUpload.single('image'), (req, res) => { try { if (!req.file) { return res.status(400).json({ error: 'No image file uploaded.' }); } res.status(200).json({ imageUrl: req.file.path }); } catch (error) { console.error("Cloudinary Image Upload Error:", error); res.status(500).json({ error: 'Image upload failed: ' + error.message }); } });
-app.post('/api/upload-file', fileUpload.single('file'), async (req, res) => { if (!req.file) { return res.status(400).json({ error: 'No file was uploaded.' }); } try { const formData = new FormData(); formData.append('UPLOADCARE_PUB_KEY', '8d5189298f8465f7079f'); formData.append('UPLOADCARE_STORE', 'auto'); formData.append('file', req.file.buffer, { filename: req.file.originalname }); const response = await axios.post('https://upload.uploadcare.com/base/', formData, { headers: formData.getHeaders() }); if (response.data && response.data.file) { res.status(200).json({ fileUUID: response.data.file }); } else { throw new Error('Uploadcare response did not contain a file UUID.'); } } catch (error) { const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message; console.error("Uploadcare API Error:", errorMessage); res.status(500).json({ error: 'File upload to Uploadcare failed.' }); } });
+app.post('/api/upload-file', fileUpload.single('file'), (req, res) => {
+  try {
+    // ✅ NEW, ROBUST CHECK: Ensure req.file exists AND it has a path.
+    if (!req.file || !req.file.path) {
+      // This will now catch the silent failure.
+      console.error("Cloudinary upload failed silently. req.file.path is missing.");
+      return res.status(500).json({ error: 'Upload to cloud storage failed. Please check server credentials.' });
+    }
 
+    // This code will only run if the upload was successful.
+    console.log("File uploaded successfully to Cloudinary:", req.file.path);
+    
+    // Send the valid URL back to the frontend.
+    res.status(200).json({ fileUrl: req.file.path });
+
+  } catch (error) {
+    console.error("Cloudinary File Upload Error (in catch block):", error);
+    res.status(500).json({ error: "File upload failed: " + error.message });
+  }
+});
 
 // --- SIGNUP NOTIFICATION EMAIL ROUTE ---
 app.post("/api/notify-signup", async (req, res) => {
@@ -179,6 +207,30 @@ app.get("/api/users", async (req, res) => { try { const userRecords = await admi
 app.post("/api/products", async (req, res) => { try { const newProduct = req.body; const docRef = await productsCollection.add(newProduct); res.status(201).json({ id: docRef.id, ...newProduct }); } catch (err) { res.status(500).json({ error: "Failed to add product: " + err.message }); } });
 app.put("/api/products/:id", async (req, res) => { try { const { id } = req.params; const updatedData = req.body; await db.collection('products').doc(id).update(updatedData); res.status(200).json({ id, ...updatedData }); } catch (err) { res.status(500).json({ error: "Failed to update product: " + err.message }); } });
 app.delete("/api/products/:id", async (req, res) => { try { const { id } = req.params; await db.collection('products').doc(id).delete(); res.status(200).json({ message: `Product with id ${id} deleted successfully.` }); } catch (err) { res.status(500).json({ error: "Failed to delete product: " + err.message }); } });
+
+// ... (The line before this is your last CRUD route, app.delete("/api/products/:id", ...))
+
+// ✅ --- NEW: DIAGNOSTIC ROUTE TO VERIFY CREDENTIALS ---
+// Use this to confirm your .env file is correct by visiting http://localhost:5000/api/check-cloudinary
+app.get("/api/check-cloudinary", async (req, res) => {
+    console.log("Attempting to verify Cloudinary credentials...");
+    try {
+        const result = await cloudinary.api.root_folders();
+        console.log("✅ Cloudinary verification successful!");
+        res.status(200).json({ 
+            success: true, 
+            message: "Cloudinary credentials are correct!",
+            foldersFound: result.folders.length 
+        });
+    } catch (error) {
+        console.error("❌ Cloudinary verification FAILED. Error details:", error.error || error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Cloudinary credentials verification failed. Check your .env file and server logs.",
+            error: error.error
+        });
+    }
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
