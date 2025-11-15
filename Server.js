@@ -21,7 +21,8 @@ admin.initializeApp({
 });
 const db = admin.firestore();
 const productsCollection = db.collection('products');
-const subscribersCollection = db.collection('subscribers'); // Added for clarity
+const subscribersCollection = db.collection('subscribers'); 
+const siteContentCollection = db.collection('siteContent');// Added for clarity
 
 // --- CLOUDINARY, MULTER, AND NODEMAILER SETUP ---
 // --- CLOUDINARY, MULTER, AND NODEMAILER SETUP ---
@@ -46,10 +47,15 @@ console.log('Nodemailer configured for:', process.env.NODEMAILER_EMAIL);
 
 // --- EXPRESS APP SETUP ---
 const app = express();
-app.use(cors());
 app.use(express.json());
 app.set('trust proxy', true);
 
+// CORS configuration - allow both common dev ports
+app.use(cors({
+    origin: ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+}));
 // =================================================================
 // --- API ROUTES ---
 // =================================================================
@@ -156,6 +162,64 @@ app.post("/api/notify-enquiry", async (req, res) => {
     }
 });
 
+// This code goes inside your server.js file
+
+// =================================================================
+// --- "OUR STORY" CONTENT MANAGEMENT ROUTES ---
+// =================================================================
+
+// GET route to fetch the current "Our Story" content
+app.get("/api/our-story", async (req, res) => {
+    try {
+        const doc = await siteContentCollection.doc('ourStory').get();
+        if (!doc.exists) {
+            return res.status(200).json({
+                title: "Our Story",
+                subtitle: "From Farms To Family.",
+                paragraph: "This is default content. Please update it from the admin panel.",
+                bulletPoints: ["Default bullet point 1"],
+                imageUrl: "https://via.placeholder.com/800x600.png?text=Please+Upload+an+Image"
+            });
+        }
+        res.status(200).json(doc.data());
+    } catch (error) {
+        console.error("Error fetching 'Our Story' data:", error);
+        res.status(500).json({ error: "Failed to fetch 'Our Story' content: " + error.message });
+    }
+});
+
+// PUT route to update the "Our Story" content
+app.put("/api/our-story", imageUpload.single('image'), async (req, res) => {
+    try {
+        const { title, subtitle, paragraph, bulletPoints } = req.body;
+        
+        if (!title || !subtitle || !paragraph || !bulletPoints) {
+            return res.status(400).json({ error: "Missing required text fields." });
+        }
+        
+        const updatedData = {
+            title,
+            subtitle,
+            paragraph,
+            bulletPoints: JSON.parse(bulletPoints) // Convert string back to array
+        };
+
+        // If a new image was uploaded, add its Cloudinary URL to the data
+        if (req.file && req.file.path) {
+            updatedData.imageUrl = req.file.path;
+        }
+
+        // Save to Firestore, creating or merging the document
+        await siteContentCollection.doc('ourStory').set(updatedData, { merge: true });
+
+        console.log("'Our Story' content was successfully updated.");
+        res.status(200).json({ message: "'Our Story' content updated successfully." });
+
+    } catch (error) {
+        console.error("Error updating 'Our Story' data:", error);
+        res.status(500).json({ error: "Failed to update 'Our Story' content: " + error.message });
+    }
+});
 // ✅ --- NEW: FEEDBACK NOTIFICATION ROUTE ---
 app.post("/api/notify-feedback", async (req, res) => {
     try {
@@ -230,6 +294,21 @@ app.get("/api/check-cloudinary", async (req, res) => {
             error: error.error
         });
     }
+});
+// --- ✅ NEW: HOMEPAGE CONTENT ROUTES ---
+app.get("/api/content/homepage", async (req, res) => {
+    try {
+        const doc = await siteContentCollection.doc('main').get();
+        if (!doc.exists) { return res.status(404).json({ message: "Homepage content not found." }); }
+        res.status(200).json(doc.data());
+    } catch (error) { res.status(500).json({ error: "Failed to fetch homepage content: " + error.message }); }
+});
+app.put("/api/content/homepage", async (req, res) => {
+    try {
+        const updatedData = req.body;
+        await siteContentCollection.doc('main').set(updatedData, { merge: true });
+        res.status(200).json({ message: "Homepage content updated successfully.", data: updatedData });
+    } catch (error) { res.status(500).json({ error: "Failed to update homepage content: " + error.message }); }
 });
 
 const PORT = process.env.PORT || 5000;
